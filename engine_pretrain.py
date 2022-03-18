@@ -14,8 +14,8 @@ from typing import Iterable
 
 import torch
 
-import util.misc as misc
 import util.lr_sched as lr_sched
+import util.misc as misc
 
 
 def train_one_epoch(model: torch.nn.Module,

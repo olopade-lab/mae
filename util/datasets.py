@@ -6,40 +6,111 @@
 # --------------------------------------------------------
 # References:
 # DeiT: https://github.com/facebookresearch/deit
+# Parts modified from timm
 # --------------------------------------------------------
 
-import os
 import PIL
-
-from torchvision import datasets, transforms
-
-from timm.data import create_transform
+from maicara.data.transforms import ToFloat
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+from timm.data.random_erasing import RandomErasing
+from timm.data.transforms_factory import (
+    transforms_imagenet_eval,
+    transforms_imagenet_train,
+    transforms_noaug_train,
+)
+from torchvision import transforms
 
 
-def build_dataset(is_train, args):
-    transform = build_transform(is_train, args)
+def create_transform(
+    input_size,
+    is_training=False,
+    use_prefetcher=False,
+    no_aug=False,
+    scale=None,
+    ratio=None,
+    hflip=0.5,
+    vflip=0.0,
+    color_jitter=0.4,
+    auto_augment=None,
+    interpolation="bilinear",
+    mean=IMAGENET_DEFAULT_MEAN,
+    std=IMAGENET_DEFAULT_STD,
+    re_prob=0.0,
+    re_mode="const",
+    re_count=1,
+    re_num_splits=0,
+    crop_pct=None,
+    tf_preprocessing=False,
+    separate=False,
+):
 
-    root = os.path.join(args.data_path, 'train' if is_train else 'val')
-    dataset = datasets.ImageFolder(root, transform=transform)
+    if isinstance(input_size, tuple):
+        img_size = input_size[-2:]
+    else:
+        img_size = input_size
 
-    print(dataset)
+    if tf_preprocessing and use_prefetcher:
+        assert not separate, "Separate transforms not supported for TF preprocessing"
+        from timm.data.tf_preprocessing import TfPreprocessTransform
 
-    return dataset
+        transform = TfPreprocessTransform(
+            is_training=is_training, size=img_size, interpolation=interpolation
+        )
+    else:
+        if is_training and no_aug:
+            assert not separate, "Cannot perform split augmentation with no_aug"
+            transform = transforms_noaug_train(
+                img_size,
+                interpolation=interpolation,
+                use_prefetcher=use_prefetcher,
+                mean=mean,
+                std=std,
+            )
+        elif is_training:
+            transform = transforms_imagenet_train(
+                img_size,
+                scale=scale,
+                ratio=ratio,
+                hflip=hflip,
+                vflip=vflip,
+                color_jitter=color_jitter,
+                auto_augment=auto_augment,
+                interpolation=interpolation,
+                use_prefetcher=use_prefetcher,
+                mean=mean,
+                std=std,
+                re_prob=re_prob,
+                re_mode=re_mode,
+                re_count=re_count,
+                re_num_splits=re_num_splits,
+                separate=separate,
+            )
+        else:
+            assert (
+                not separate
+            ), "Separate transforms not supported for validation preprocessing"
+            transform = transforms_imagenet_eval(
+                img_size,
+                interpolation=interpolation,
+                use_prefetcher=use_prefetcher,
+                mean=mean,
+                std=std,
+                crop_pct=crop_pct,
+            )
+
+    return transform
 
 
-def build_transform(is_train, args):
-    mean = IMAGENET_DEFAULT_MEAN
-    std = IMAGENET_DEFAULT_STD
-    # train transform
+def build_transform(
+    is_train, args, mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD
+):
     if is_train:
-        # this should always dispatch to transforms_imagenet_train
         transform = create_transform(
             input_size=args.input_size,
             is_training=True,
             color_jitter=args.color_jitter,
             auto_augment=args.aa,
-            interpolation='bicubic',
+            interpolation="bicubic",
             re_prob=args.reprob,
             re_mode=args.remode,
             re_count=args.recount,
@@ -56,10 +127,13 @@ def build_transform(is_train, args):
         crop_pct = 1.0
     size = int(args.input_size / crop_pct)
     t.append(
-        transforms.Resize(size, interpolation=PIL.Image.BICUBIC),  # to maintain same ratio w.r.t. 224 images
+        transforms.Resize(
+            size, interpolation=PIL.Image.BICUBIC
+        ),  # to maintain same ratio w.r.t. 224 images
     )
     t.append(transforms.CenterCrop(args.input_size))
 
     t.append(transforms.ToTensor())
+    # t.append(ToFloat())
     t.append(transforms.Normalize(mean, std))
     return transforms.Compose(t)

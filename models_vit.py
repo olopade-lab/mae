@@ -11,10 +11,9 @@
 
 from functools import partial
 
+import timm.models.vision_transformer
 import torch
 import torch.nn as nn
-
-import timm.models.vision_transformer
 
 
 class VisionTransformer(timm.models.vision_transformer.VisionTransformer):
@@ -53,12 +52,56 @@ class VisionTransformer(timm.models.vision_transformer.VisionTransformer):
         return outcome
 
 
+class BilateralVisionTransformer(VisionTransformer):
+    """ TODO 
+    """
+    def __init__(self, global_pool=False, **kwargs):
+        super(BilateralVisionTransformer, self).__init__(**kwargs)
+
+        num_classes = kwargs['num_classes']
+        self.reset_classifier(num_classes)
+        self.apply(self._init_weights)
+        
+    def reset_classifier(self, num_classes):
+        self.num_classes = num_classes
+        self.head = nn.Linear(self.embed_dim * 2, num_classes) if num_classes > 0 else nn.Identity()
+
+    def forward(self, x, contralateral_x):
+        x = self.forward_features(x)
+        contralateral_x = self.forward_features(contralateral_x)
+        x = torch.cat((x, contralateral_x), dim=1)
+        return self.head(x)
+
+def bilateral_vit_base_patch16_grayscale(**kwargs):
+    model = BilateralVisionTransformer(
+        patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), in_chans=1, **kwargs)
+    return model
+
+def vit_base_patch16_grayscale(**kwargs):
+    model = VisionTransformer(
+        patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), in_chans=1, **kwargs)
+    return model
+
 def vit_base_patch16(**kwargs):
     model = VisionTransformer(
         patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
+
+def bilateral_vit_large_patch16_grayscale(**kwargs):
+    model = BilateralVisionTransformer(
+        patch_size=16, embed_dim=1024, depth=24, num_heads=16, mlp_ratio=4, qkv_bias=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), in_chans=1, **kwargs)
+    return model
+
+def vit_large_patch16_grayscale(**kwargs):
+    model = VisionTransformer(
+        patch_size=16, embed_dim=1024, depth=24, num_heads=16, mlp_ratio=4, qkv_bias=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), in_chans=1, **kwargs)
+    return model
 
 def vit_large_patch16(**kwargs):
     model = VisionTransformer(

@@ -8,35 +8,49 @@
 # --------------------------------------------------------
 
 import argparse
+import datetime
 import os
 import uuid
 from pathlib import Path
 
-import main_finetune as classification
 import submitit
+
+import main_finetune as classification
 
 
 def parse_args():
     classification_parser = classification.get_args_parser()
-    parser = argparse.ArgumentParser("Submitit for MAE finetune", parents=[classification_parser])
-    parser.add_argument("--ngpus", default=8, type=int, help="Number of gpus to request on each node")
-    parser.add_argument("--nodes", default=2, type=int, help="Number of nodes to request")
+    parser = argparse.ArgumentParser(
+        "Submitit for MAE finetune", parents=[classification_parser]
+    )
+    parser.add_argument(
+        "--ngpus", default=8, type=int, help="Number of gpus to request on each node"
+    )
+    parser.add_argument(
+        "--nodes", default=2, type=int, help="Number of nodes to request"
+    )
     parser.add_argument("--timeout", default=4320, type=int, help="Duration of the job")
-    parser.add_argument("--job_dir", default="", type=str, help="Job dir. Leave empty for automatic.")
+    parser.add_argument(
+        "--job_dir", default="", type=str, help="Job dir. Leave empty for automatic."
+    )
 
-    parser.add_argument("--partition", default="learnfair", type=str, help="Partition where to submit")
-    parser.add_argument("--use_volta32", action='store_true', help="Request 32G V100 GPUs")
-    parser.add_argument('--comment', default="", type=str, help="Comment to pass to scheduler")
+    parser.add_argument(
+        "--partition", default="learnfair", type=str, help="Partition where to submit"
+    )
+    parser.add_argument(
+        "--use_volta32", action="store_true", help="Request 32G V100 GPUs"
+    )
+    parser.add_argument(
+        "--comment", default="", type=str, help="Comment to pass to scheduler"
+    )
     return parser.parse_args()
 
 
 def get_shared_folder() -> Path:
-    user = os.getenv("USER")
-    if Path("/checkpoint/").is_dir():
-        p = Path(f"/checkpoint/{user}/experiments")
-        p.mkdir(exist_ok=True)
-        return p
-    raise RuntimeError("No shared folder available")
+    home = os.getenv("HOME")
+    p = Path(f"{home}/experiments")
+    p.mkdir(exist_ok=True)
+    return p
 
 
 def get_init_file():
@@ -60,6 +74,7 @@ class Trainer(object):
 
     def checkpoint(self):
         import os
+
         import submitit
 
         self.args.dist_url = get_init_file().as_uri()
@@ -71,11 +86,14 @@ class Trainer(object):
         return submitit.helpers.DelayedSubmission(empty_trainer)
 
     def _setup_gpu_args(self):
-        import submitit
         from pathlib import Path
 
+        import submitit
+
         job_env = submitit.JobEnvironment()
-        self.args.output_dir = Path(str(self.args.output_dir).replace("%j", str(job_env.job_id)))
+        self.args.output_dir = Path(
+            str(self.args.output_dir).replace("%j", str(job_env.job_id))
+        )
         self.args.log_dir = self.args.output_dir
         self.args.gpu = job_env.local_rank
         self.args.rank = job_env.global_rank
@@ -86,9 +104,18 @@ class Trainer(object):
 def main():
     args = parse_args()
     if args.job_dir == "":
-        args.job_dir = get_shared_folder() / "%j"
+        args.job_dir = get_shared_folder() / datetime.datetime.now().strftime(
+            "%Y_%m_%d_%H_%M"
+        )
+    link = get_shared_folder() / "latest"
+    try:
+        os.unlink(link)
+    except FileNotFoundError:
+        pass
+    os.symlink(args.job_dir, link)
 
     # Note that the folder will depend on the job_id, to easily track experiments
+    print(f"writing to folder {args.job_dir}")
     executor = submitit.AutoExecutor(folder=args.job_dir, slurm_max_num_timeout=30)
 
     num_gpus_per_node = args.ngpus
@@ -98,21 +125,21 @@ def main():
     partition = args.partition
     kwargs = {}
     if args.use_volta32:
-        kwargs['slurm_constraint'] = 'volta32gb'
+        kwargs["slurm_constraint"] = "volta32gb"
     if args.comment:
-        kwargs['slurm_comment'] = args.comment
+        kwargs["slurm_comment"] = args.comment
 
     executor.update_parameters(
         mem_gb=40 * num_gpus_per_node,
         gpus_per_node=num_gpus_per_node,
-        tasks_per_node=num_gpus_per_node, # one task per GPU
+        tasks_per_node=num_gpus_per_node,  # one task per GPU
         cpus_per_task=10,
         nodes=nodes,
         timeout_min=timeout_min,
         # Below are cluster dependent parameters
         slurm_partition=partition,
         slurm_signal_delay_s=120,
-        **kwargs
+        **kwargs,
     )
 
     executor.update_parameters(name="mae")
@@ -123,8 +150,7 @@ def main():
     trainer = Trainer(args)
     job = executor.submit(trainer)
 
-    # print("Submitted job_id:", job.job_id)
-    print(job.job_id)
+    print("Submitted job_id:", job.job_id)
 
 
 if __name__ == "__main__":
