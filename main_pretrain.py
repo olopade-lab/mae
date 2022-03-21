@@ -64,7 +64,7 @@ def get_args_parser():
 
     parser.add_argument(
         "--prescale",
-        default=1.,
+        default=1.0,
         type=float,
         help="Sample this fraction of the total dataset (for debugging)",
     )
@@ -166,7 +166,6 @@ def get_args_parser():
 
 
 def main(args):
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
     misc.init_distributed_mode(args)
 
     print("job dir: {}".format(os.path.dirname(os.path.realpath(__file__))))
@@ -180,7 +179,12 @@ def main(args):
     np.random.seed(seed)
 
     cudnn.benchmark = True
-    dataset_train = ChiMECSSLDataset(image_size=args.image_size, prescale=args.prescale, rgb=args.rgb, crop_min=args.crop_min) 
+    dataset_train = ChiMECSSLDataset(
+        image_size=args.image_size,
+        prescale=args.prescale,
+        rgb=args.rgb,
+        crop_min=args.crop_min,
+    )
 
     print(dataset_train)
 
@@ -271,7 +275,6 @@ def main(args):
                 loss_scaler=loss_scaler,
                 epoch=epoch,
             )
-
 
         log_stats = {
             **{f"train_{k}": v for k, v in train_stats.items()},
