@@ -17,11 +17,13 @@ import random
 import string
 import time
 from pathlib import Path
+from tkinter import N
 
 import numpy as np
 import timm
 import torch
 import torch.backends.cudnn as cudnn
+import torch.multiprocessing as mp
 from maicara.models.metrics import ConcordanceIndex
 from maicara.preprocessing.utils import log_code_state
 from pycox.models import logistic_hazard
@@ -220,20 +222,17 @@ def get_args_parser():
 
     # Dataset parameters
     parser.add_argument(
-        "--nb_classes",
+        "--output_length",
         default=1000,
         type=int,
-        help="number of the classification types",
+        help="Length of the output representation",
     )
     parser.add_argument(
         "--output_dir",
         default=None,
         help="path where to save, empty with wandb enabled will save to wandb dir",
     )
-    parser.add_argument(
-        "--device", default="cuda", help="device to use for training / testing"
-    )
-    parser.add_argument("--seed", default=None, type=int)
+    parser.add_argument("--seed", default=0, type=int)
     parser.add_argument("--resume", default="", help="resume from checkpoint")
     parser.add_argument(
         "--start_epoch", default=0, type=int, metavar="N", help="start epoch"
@@ -258,7 +257,6 @@ def get_args_parser():
     parser.add_argument("--val_size", default=0.2, type=float)
     parser.add_argument("--prescale", default=1, type=float)
     parser.add_argument("--balance", default=False, type=wandb_bool)
-    parser.add_argument("--replace_samper_ddp", default=False, type=wandb_bool)
     parser.add_argument("--debug", default=False, type=wandb_bool)
     parser.add_argument(
         "--scheme",
@@ -271,67 +269,46 @@ def get_args_parser():
         default="/gpfs/data/huo-lab/Image/annawoodard/maicara/data/interim/mammo_v10/clean_metadata.pkl",
     )
 
-    # distributed training parameters
-    parser.add_argument(
-        "--world_size", default=1, type=int, help="number of distributed processes"
-    )
-    parser.add_argument("--local_rank", default=-1, type=int)
-    parser.add_argument("--dist_on_itp", action="store_true")
-    parser.add_argument(
-        "--dist_url", default="env://", help="url used to set up distributed training"
-    )
     parser.add_argument(
         "--project",
         default=None,
         help="wandb project to log to (None to disable wandb logging)",
     )
-    parser.add_argument("--group", default=None)
+    parser.add_argument(
+        "--group",
+        default=None,
+        help="wandb group to log to",
+    )
     parser.add_argument("--config", default=None, help="wandb config to load")
+    parser.add_argument(
+        "--gpus",
+        default=None,
+        type=str,
+        help="Comma-separated list of GPUs to run on. `None` to run on all. Example: `--gpus 0,1,2`",
+    )
+    parser.add_argument(
+        "--trials",
+        default=1,
+        type=int,
+        help="Number of times to run",
+    )
 
     return parser
 
 
 def main(args):
-    if args.output_dir is None:
-        args.output_dir = os.path.join(
-            os.environ["HOME"],
-            "experiments",
-            args.group if args.group is not None else "",
-            datetime.datetime.now().strftime("%Y_%m_%d_%H_%M")
-            + "".join([random.choice(string.ascii_lowercase) for _ in range(5)]),
-        )
-    if args.project is not None:
-        if args.config is not None:
-            wandb.init(
-                config=args.config,
-                project=args.project,
-                group=args.group,
-            )
-        else:
-            wandb.init(
-                config=args,
-                project=args.project,
-                group=args.group,
-            )
-        # args = wandb.config
-        log_code_state(wandb.run.dir)
-
-    # try:
-    #     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
-    # except AttributeError:
-    #     pass
-    misc.init_distributed_mode(args)
+    args.output_dir = misc.prepare_output_dir(args.output_dir, "finetuning", args.group)
+    misc.setup_for_distributed(True, os.path.join(args.output_dir, "finetune.log"))
 
     print("job dir: {}".format(os.path.dirname(os.path.realpath(__file__))))
     print("{}".format(args).replace(", ", ",\n"))
 
-    device = torch.device(args.device)
+    device = torch.device("cuda:0")
 
-    if args.seed is not None:
-        # fix the seed for reproducibility
-        seed = args.seed + misc.get_rank()
-        torch.manual_seed(seed)
-        np.random.seed(seed)
+    # fix the seed for reproducibility
+    seed = args.seed + misc.get_rank()
+    torch.manual_seed(seed)
+    np.random.seed(seed)
 
     cudnn.benchmark = True
 
@@ -356,25 +333,10 @@ def main(args):
     )
     num_tasks = misc.get_world_size()
     global_rank = misc.get_rank()
-    sampler_train = DistributedSamplerWrapper(
-        BalancedClassSampler(train_dataset.metadata.event.to_list()),
-        num_tasks,
-        global_rank,
-        shuffle=True,
-    )
+
+    sampler_train = BalancedClassSampler(train_dataset.metadata.event.to_list())
     print("Sampler_train = %s" % str(sampler_train))
-    if args.dist_eval:
-        if len(val_dataset) % num_tasks != 0:
-            print(
-                "Warning: Enabling distributed evaluation with an eval dataset not divisible by process number. "
-                "This will slightly alter validation results as extra duplicate entries are added to achieve "
-                "equal num of samples per-process."
-            )
-        sampler_val = torch.utils.data.DistributedSampler(
-            val_dataset, num_replicas=num_tasks, rank=global_rank, shuffle=True
-        )  # shuffle=True to reduce monitor bias
-    else:
-        sampler_val = torch.utils.data.SequentialSampler(val_dataset)
+    sampler_val = torch.utils.data.SequentialSampler(val_dataset)
     sampler_test = torch.utils.data.SequentialSampler(test_dataset)
 
     if global_rank == 0 and args.output_dir is not None and not args.eval:
@@ -423,11 +385,11 @@ def main(args):
             switch_prob=args.mixup_switch_prob,
             mode=args.mixup_mode,
             label_smoothing=args.smoothing,
-            num_classes=args.nb_classes,
+            num_classes=args.output_length,
         )
 
     model = models_vit.__dict__[args.model](
-        num_classes=args.nb_classes,
+        output_length=args.output_length,
         drop_path_rate=args.drop_path,
         global_pool=args.global_pool,
     )
@@ -468,10 +430,9 @@ def main(args):
 
     model.to(device)
 
-    model_without_ddp = model
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-    print("Model = %s" % str(model_without_ddp))
+    print("Model = %s" % str(model))
     print("number of params (M): %.2f" % (n_parameters / 1.0e6))
 
     eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
@@ -485,15 +446,23 @@ def main(args):
     print("accumulate grad iterations: %d" % args.accum_iter)
     print("effective batch size: %d" % eff_batch_size)
 
-    if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-        model_without_ddp = model.module
+    if args.gpus is None:
+        args.gpus = list(range(torch.cuda.device_count()))
+    elif isinstance(args.gpus, str):
+        args.gpus = [int(x) for x in args.gpus.split(",")]
+    print(
+        f"Initializing DataParallel to run on GPUs: {','.join([str(x) for x in args.gpus])}"
+    )
+    if len(args.gpus) > 1:
+        model = torch.nn.parallel.DataParallel(model, device_ids=args.gpus)
+    # I'm having issues with DDP, DP isn't SO much of a performance hit, see: https://spell.ml/blog/pytorch-distributed-data-parallel-XvEaABIAAB8Ars0e
+    # model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
 
     # build optimizer with layer-wise lr decay (lrd)
     param_groups = lrd.param_groups_lrd(
-        model_without_ddp,
+        model,
         args.weight_decay,
-        no_weight_decay_list=model_without_ddp.no_weight_decay(),
+        no_weight_decay_list=model.no_weight_decay(),
         layer_decay=args.layer_decay,
     )
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
@@ -512,7 +481,7 @@ def main(args):
 
     misc.load_model(
         args=args,
-        model_without_ddp=model_without_ddp,
+        model_without_ddp=model,
         optimizer=optimizer,
         loss_scaler=loss_scaler,
     )
@@ -537,9 +506,6 @@ def main(args):
     start_time = time.time()
     max_accuracy = 0.0
     for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed:
-            data_loader_train.sampler.set_epoch(epoch)
-        print("got here 1", flush=True)
         train_stats = train_one_epoch(
             model,
             criterion,
@@ -555,12 +521,13 @@ def main(args):
         )
         val_stats = evaluate(
             data_loader_val,
-            model if args.dist_eval else model_without_ddp,
+            model,
             device,
             criterion,
             val_c_index,
             "val",
         )
+        c_index = val_c_index.compute()
         val_c_index.reset()
 
         if log_writer is not None:
@@ -574,33 +541,33 @@ def main(args):
             "n_parameters": n_parameters,
         }
 
-        if misc.is_main_process():
-            if log_writer is not None:
-                log_writer.flush()
-            with open(
-                os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8"
-            ) as f:
-                f.write(json.dumps(log_stats) + "\n")
+        if log_writer is not None:
+            log_writer.flush()
+        with open(
+            os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8"
+        ) as f:
+            f.write(json.dumps(log_stats) + "\n")
 
     if args.output_dir:
         misc.save_model(
             args=args,
             model=model,
-            model_without_ddp=model_without_ddp,
+            model_without_ddp=model,
             optimizer=optimizer,
             loss_scaler=loss_scaler,
             epoch=epoch,
         )
 
-    evaluate(
-        data_loader_test,
-        model_without_ddp,
-        device,
-        criterion,
-        test_c_index,
-        "test",
-    )
-    c_index = test_c_index.compute()
+    if args.val_size > 0:
+        evaluate(
+            data_loader_test,
+            model,
+            device,
+            criterion,
+            test_c_index,
+            "test",
+        )
+        c_index = test_c_index.compute()
     print(
         f"Concordance index of the network on the {len(test_dataset)} test exams: {c_index:.2f}"
     )
@@ -609,11 +576,30 @@ def main(args):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print("Training time {}".format(total_time_str))
 
+    return c_index
+
 
 if __name__ == "__main__":
-    # wandb.login()
     args = get_args_parser()
     args = args.parse_args()
-    if args.output_dir:
-        Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-    main(args)
+    args.group = "".join([random.choice(string.ascii_lowercase) for _ in range(5)])
+    metric_logger = misc.MetricLogger(delimiter="  ")
+    for i in range(args.trials):
+        print(f"starting trial {i}")
+        args.seed = i
+        metric_logger.update(c_index=main(args))
+    print(metric_logger)
+    if args.project is not None:
+        wandb.login()
+        config = args.config if args.config else args
+        run = wandb.init(config=config, project=args.project, group=args.group)
+        log_code_state(run.dir)
+        c_index = metric_logger.c_index.global_avg
+        std = metric_logger.c_index.std
+        wandb.log(
+            {
+                "collated/c-index": c_index,
+                "collated/weighted-c-index": c_index / std,
+                "collated/c-index-std": std,
+            }
+        )

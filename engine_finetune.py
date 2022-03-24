@@ -18,7 +18,6 @@ from timm.data import Mixup
 
 import util.lr_sched as lr_sched
 import util.misc as misc
-import wandb
 
 
 def train_one_epoch(
@@ -47,6 +46,9 @@ def train_one_epoch(
     if log_writer is not None:
         print("log_dir: {}".format(log_writer.log_dir))
 
+    # This was supposed to help with uneven inputs, but I still can't get it working
+    # https://github.com/pytorch/pytorch/pull/42577/files#diff-cf805caec69e0dd5e7ef09540316fdd9eefe407f317c4d89ebb1c2f82167045b
+    # with model.join():
     for data_iter_step, (x, contralateral_x, duration, event) in enumerate(
         metric_logger.log_every(data_loader, print_freq, header)
     ):
@@ -106,18 +108,8 @@ def train_one_epoch(
             epoch_1000x = int((data_iter_step / len(data_loader) + epoch) * 1000)
             log_writer.add_scalar("loss", loss_value_reduce, epoch_1000x)
             log_writer.add_scalar("lr", max_lr, epoch_1000x)
-            if args.project is not None and (data_iter_step + 1) % 2 == 0:
-                wandb.log(
-                    {
-                        "train/loss": loss_value_reduce,
-                        "train/lr": max_lr,
-                        "epoch": epoch_1000x,
-                    }
-                )
 
-    print("about to sync", flush=True)
     # gather the stats from all processes
-    metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
@@ -149,8 +141,7 @@ def evaluate(data_loader, model, device, criterion, c_index, tag="val"):
         c_index.update(output, duration, event)
         metric_logger.update(loss=loss.item())
     # gather the stats from all processes
-    metric_logger.synchronize_between_processes()
-    c_index.sync()
+    # metric_logger.synchronize_between_processes()
     c_index_value = c_index.compute()
 
     print(

@@ -1,6 +1,11 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
+import argparse
+import datetime
+import json
+import os
+
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 # --------------------------------------------------------
@@ -8,10 +13,8 @@
 # DeiT: https://github.com/facebookresearch/deit
 # BEiT: https://github.com/microsoft/unilm/tree/master/beit
 # --------------------------------------------------------
-import argparse
-import datetime
-import json
-import os
+import random
+import string
 import time
 from pathlib import Path
 
@@ -19,6 +22,7 @@ import numpy as np
 import timm
 import torch
 import torch.backends.cudnn as cudnn
+import torch.multiprocessing as mp
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 from torch.utils.tensorboard import SummaryWriter
@@ -128,11 +132,8 @@ def get_args_parser():
 
     parser.add_argument(
         "--output_dir",
-        default="./output_dir",
+        default=None,
         help="path where to save, empty for no saving",
-    )
-    parser.add_argument(
-        "--log_dir", default="./output_dir", help="path where to tensorboard log"
     )
     parser.add_argument(
         "--device", default="cuda", help="device to use for training / testing"
@@ -154,7 +155,7 @@ def get_args_parser():
 
     # distributed training parameters
     parser.add_argument(
-        "--world_size", default=1, type=int, help="number of distributed processes"
+        "--world_size", default=None, type=int, help="number of distributed processes"
     )
     parser.add_argument("--local_rank", default=-1, type=int)
     parser.add_argument("--dist_on_itp", action="store_true")
@@ -165,7 +166,11 @@ def get_args_parser():
     return parser
 
 
-def main(args):
+def main(gpu, args):
+    args.output_dir = misc.prepare_output_dir(args.output_dir, "pretraining", args.group)
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    args.gpu = gpu
+    args.rank = gpu
     misc.init_distributed_mode(args)
 
     print("job dir: {}".format(os.path.dirname(os.path.realpath(__file__))))
@@ -198,9 +203,8 @@ def main(args):
     else:
         sampler_train = torch.utils.data.RandomSampler(dataset_train)
 
-    if global_rank == 0 and args.log_dir is not None:
-        os.makedirs(args.log_dir, exist_ok=True)
-        log_writer = SummaryWriter(log_dir=args.log_dir)
+    if global_rank == 0:
+        log_writer = SummaryWriter(log_dir=args.output_dir)
     else:
         log_writer = None
 
@@ -297,6 +301,6 @@ def main(args):
 if __name__ == "__main__":
     args = get_args_parser()
     args = args.parse_args()
-    if args.output_dir:
-        Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-    main(args)
+    if args.world_size is None:
+        args.world_size = torch.cuda.device_count()
+    mp.spawn(main, args=(args,), nprocs=args.world_size, join=True)

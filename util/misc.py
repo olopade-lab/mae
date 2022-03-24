@@ -12,6 +12,8 @@
 import builtins
 import datetime
 import os
+import random
+import string
 import time
 from collections import defaultdict, deque
 from pathlib import Path
@@ -19,6 +21,22 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 from torch._six import inf
+
+
+def prepare_output_dir(output_dir, tag, group=None):
+    if output_dir is None:
+        output_dir = os.path.join(
+            os.environ["HOME"],
+            "mae",
+            f"{tag}_experiments",
+            group if group is not None else "",
+            datetime.datetime.now().strftime("%Y_%m_%d_%H_%M")
+            + "_"
+            + "".join([random.choice(string.ascii_lowercase) for _ in range(5)]),
+        )
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    return output_dir
 
 
 class SmoothedValue(object):
@@ -43,15 +61,11 @@ class SmoothedValue(object):
         """
         Warning: does not synchronize the deque!
         """
-        print("got here 2", flush=True)
         if not is_dist_avail_and_initialized():
             return
         t = torch.tensor([self.count, self.total], dtype=torch.float64, device="cuda")
-        print("got here 3", flush=True)
         dist.barrier()
-        print("got here 4", flush=True)
         dist.all_reduce(t)
-        print("got here 5", flush=True)
         t = t.tolist()
         self.count = int(t[0])
         self.total = t[1]
@@ -73,6 +87,11 @@ class SmoothedValue(object):
     @property
     def max(self):
         return max(self.deque)
+
+    @property
+    def std(self):
+        d = torch.tensor(list(self.deque), dtype=torch.float32)
+        return d.std().item()
 
     @property
     def value(self):
@@ -114,7 +133,10 @@ class MetricLogger(object):
     def __str__(self):
         loss_str = []
         for name, meter in self.meters.items():
-            loss_str.append("{}: {}".format(name, str(meter)))
+            try:
+                loss_str.append("{}: {}".format(name, str(meter)))
+            except Exception as e:
+                print("caught exception printing ", name, e)
         return self.delimiter.join(loss_str)
 
     def synchronize_between_processes(self):
@@ -186,7 +208,7 @@ class MetricLogger(object):
         )
 
 
-def setup_for_distributed(is_master):
+def setup_for_distributed(is_master, file=None):
     """
     This function disables printing when not in master process
     """
@@ -195,10 +217,18 @@ def setup_for_distributed(is_master):
     def print(*args, **kwargs):
         force = kwargs.pop("force", False)
         force = force or (get_world_size() > 8)
+        if "file" in kwargs:
+            kwargs.pop("file")
         if is_master or force:
             now = datetime.datetime.now().time()
             builtin_print("[{}] ".format(now), end="")  # print with time stamp
             builtin_print(*args, **kwargs)
+            if file is not None:
+                with open(file, "a+") as f:
+                    builtin_print(
+                        "[{}] ".format(now), end="", file=f
+                    )  # print with time stamp
+                    builtin_print(*args, **kwargs, file=f)
 
     builtins.print = print
 
@@ -219,7 +249,6 @@ def get_world_size():
 
 def get_rank():
     if not is_dist_avail_and_initialized():
-        print("dist is either not available or not initialized")
         return 0
     return dist.get_rank()
 
@@ -258,6 +287,8 @@ def init_distributed_mode(args):
         setup_for_distributed(is_master=True)  # hack
         args.distributed = False
         return
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = "12355"
 
     args.distributed = True
 
@@ -271,7 +302,7 @@ def init_distributed_mode(args):
     )
     torch.distributed.init_process_group(
         backend=args.dist_backend,
-        init_method=args.dist_url,
+        # init_method=args.dist_url,
         world_size=args.world_size,
         rank=args.rank,
     )
