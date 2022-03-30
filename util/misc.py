@@ -30,9 +30,8 @@ def prepare_output_dir(output_dir, tag, group=None):
             "mae",
             f"{tag}_experiments",
             group if group is not None else "",
-            datetime.datetime.now().strftime("%Y_%m_%d_%H_%M")
-            + "_"
-            + "".join([random.choice(string.ascii_lowercase) for _ in range(5)]),
+            datetime.datetime.now().strftime("%Y_%m_%d_%H_%M"),
+            "".join([random.choice(string.ascii_lowercase) for _ in range(5)]),
         )
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -262,7 +261,7 @@ def save_on_master(*args, **kwargs):
         torch.save(*args, **kwargs)
 
 
-def init_distributed_mode(args):
+def init_distributed_mode(args, tag=None):
     if args.dist_on_itp:
         args.rank = int(os.environ["OMPI_COMM_WORLD_RANK"])
         args.world_size = int(os.environ["OMPI_COMM_WORLD_SIZE"])
@@ -307,7 +306,10 @@ def init_distributed_mode(args):
         rank=args.rank,
     )
     torch.distributed.barrier()
-    setup_for_distributed(args.rank == 0)
+    # setup_for_distributed(
+    #     args.rank == 0,
+    #     file=os.path.join(args.output_dir, tag + ".txt") if tag is not None else tag,
+    # )
 
 
 class NativeScalerWithGradNormCount:

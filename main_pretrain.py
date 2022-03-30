@@ -25,12 +25,12 @@ import torch.backends.cudnn as cudnn
 import torch.multiprocessing as mp
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
+from maicara.preprocessing.utils import log_code_state
 from torch.utils.tensorboard import SummaryWriter
 
 assert timm.__version__ == "0.3.2"  # version check
 import timm.optim.optim_factory as optim_factory
-
-# from chimec import ChiMECSSLDataset
+from maicara.data.chexpert import CheXpertSSLDataset
 from maicara.data.chimec import ChiMECSSLDataset
 
 import models_mae
@@ -63,6 +63,7 @@ def get_args_parser():
         metavar="MODEL",
         help="Name of model to train",
     )
+    parser.add_argument("--dataset", default="chimec", choices=("chimec", "chexpert"))
 
     parser.add_argument("--image_size", default=224, type=int, help="images input size")
 
@@ -167,11 +168,13 @@ def get_args_parser():
 
 
 def main(gpu, args):
-    args.output_dir = misc.prepare_output_dir(args.output_dir, "pretraining", args.group)
+    args.output_dir = misc.prepare_output_dir(args.output_dir, "pretraining")
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     args.gpu = gpu
     args.rank = gpu
-    misc.init_distributed_mode(args)
+    misc.init_distributed_mode(args, tag="pretrain")
+    if misc.is_main_process():
+        log_code_state(os.path.dirname(args.output_dir))
 
     print("job dir: {}".format(os.path.dirname(os.path.realpath(__file__))))
     print("{}".format(args).replace(", ", ",\n"))
@@ -184,7 +187,8 @@ def main(gpu, args):
     np.random.seed(seed)
 
     cudnn.benchmark = True
-    dataset_train = ChiMECSSLDataset(
+    SSLDataset = ChiMECSSLDataset if args.dataset == "chimec" else CheXpertSSLDataset
+    dataset_train = SSLDataset(
         image_size=args.image_size,
         prescale=args.prescale,
         rgb=args.rgb,
@@ -203,6 +207,7 @@ def main(gpu, args):
     else:
         sampler_train = torch.utils.data.RandomSampler(dataset_train)
 
+        log_writer = SummaryWriter(log_dir=args.output_dir)
     if global_rank == 0:
         log_writer = SummaryWriter(log_dir=args.output_dir)
     else:
@@ -270,22 +275,22 @@ def main(gpu, args):
             log_writer=log_writer,
             args=args,
         )
-        if args.output_dir and (epoch % 2 == 0 or epoch + 1 == args.epochs):
-            misc.save_model(
-                args=args,
-                model=model,
-                model_without_ddp=model_without_ddp,
-                optimizer=optimizer,
-                loss_scaler=loss_scaler,
-                epoch=epoch,
-            )
 
         log_stats = {
             **{f"train_{k}": v for k, v in train_stats.items()},
             "epoch": epoch,
         }
 
-        if args.output_dir and misc.is_main_process():
+        if misc.is_main_process():
+            if epoch % 2 == 0 or epoch + 1 == args.epochs:
+                misc.save_model(
+                    args=args,
+                    model=model,
+                    model_without_ddp=model_without_ddp,
+                    optimizer=optimizer,
+                    loss_scaler=loss_scaler,
+                    epoch=epoch,
+                )
             if log_writer is not None:
                 log_writer.flush()
             with open(

@@ -41,7 +41,7 @@ def train_one_epoch(
     if log_writer is not None:
         print("log_dir: {}".format(log_writer.log_dir))
 
-    for data_iter_step, (samples, _) in enumerate(
+    for data_iter_step, samples in enumerate(
         metric_logger.log_every(data_loader, print_freq, header)
     ):
 
