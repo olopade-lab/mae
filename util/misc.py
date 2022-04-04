@@ -306,10 +306,10 @@ def init_distributed_mode(args, tag=None):
         rank=args.rank,
     )
     torch.distributed.barrier()
-    # setup_for_distributed(
-    #     args.rank == 0,
-    #     file=os.path.join(args.output_dir, tag + ".txt") if tag is not None else tag,
-    # )
+    setup_for_distributed(
+        args.rank == 0,
+        file=os.path.join(args.output_dir, tag + ".txt") if tag is not None else tag,
+    )
 
 
 class NativeScalerWithGradNormCount:

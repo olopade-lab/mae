@@ -13,8 +13,7 @@ import os
 # DeiT: https://github.com/facebookresearch/deit
 # BEiT: https://github.com/microsoft/unilm/tree/master/beit
 # --------------------------------------------------------
-import random
-import string
+import sys
 import time
 from pathlib import Path
 
@@ -84,6 +83,12 @@ def get_args_parser():
         default=0.5,
         type=float,
         help="Minimum scale for random resized crop.",
+    )
+    parser.add_argument(
+        "--empty_crop",
+        default=False,
+        action="store_true",
+        help="Crop out entirely empty/black columns or rows from images or not",
     )
 
     parser.add_argument(
@@ -177,6 +182,7 @@ def main(gpu, args):
         log_code_state(os.path.dirname(args.output_dir))
 
     print("job dir: {}".format(os.path.dirname(os.path.realpath(__file__))))
+    print("called with: {}".format(" ".join(sys.argv)))
     print("{}".format(args).replace(", ", ",\n"))
 
     device = torch.device(args.device)
@@ -193,6 +199,7 @@ def main(gpu, args):
         prescale=args.prescale,
         rgb=args.rgb,
         crop_min=args.crop_min,
+        empty_crop=args.empty_crop,
     )
 
     print(dataset_train)
@@ -223,7 +230,9 @@ def main(gpu, args):
     )
 
     # define the model
-    model = models_mae.__dict__[args.model](norm_pix_loss=args.norm_pix_loss)
+    model = models_mae.__dict__[args.model](
+        norm_pix_loss=args.norm_pix_loss, img_size=args.image_size
+    )
 
     model.to(device)
 
@@ -243,7 +252,7 @@ def main(gpu, args):
 
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(
-            model, device_ids=[args.gpu], find_unused_parameters=True
+            model, device_ids=[args.gpu]  # , find_unused_parameters=True
         )
         model_without_ddp = model.module
 
