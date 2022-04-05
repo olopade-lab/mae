@@ -64,7 +64,7 @@ def get_args_parser():
     )
     parser.add_argument("--dataset", default="chimec", choices=("chimec", "chexpert"))
 
-    parser.add_argument("--image_size", default=224, type=int, help="images input size")
+    parser.add_argument("--img_size", default=224, type=int, help="images input size")
 
     parser.add_argument(
         "--prescale",
@@ -195,7 +195,7 @@ def main(gpu, args):
     cudnn.benchmark = True
     SSLDataset = ChiMECSSLDataset if args.dataset == "chimec" else CheXpertSSLDataset
     dataset_train = SSLDataset(
-        image_size=args.image_size,
+        image_size=args.img_size,
         prescale=args.prescale,
         rgb=args.rgb,
         crop_min=args.crop_min,
@@ -231,7 +231,7 @@ def main(gpu, args):
 
     # define the model
     model = models_mae.__dict__[args.model](
-        norm_pix_loss=args.norm_pix_loss, img_size=args.image_size
+        norm_pix_loss=args.norm_pix_loss, img_size=args.img_size
     )
 
     model.to(device)

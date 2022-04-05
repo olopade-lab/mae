@@ -78,7 +78,7 @@ def get_args_parser():
         help="Name of model to train",
     )
 
-    parser.add_argument("--input_size", default=224, type=int, help="images input size")
+    parser.add_argument("--img_size", default=224, type=int, help="images input size")
 
     parser.add_argument(
         "--drop_path",
@@ -252,18 +252,11 @@ def get_args_parser():
     )
     parser.add_argument("--no_pin_mem", action="store_false", dest="pin_mem")
     parser.set_defaults(pin_mem=True)
-    parser.add_argument("--num_durations", default=4, type=int)
     parser.add_argument("--test_size", default=0.2, type=float)
     parser.add_argument("--val_size", default=0.2, type=float)
     parser.add_argument("--prescale", default=1, type=float)
     parser.add_argument("--balance", default=False, type=wandb_bool)
     parser.add_argument("--debug", default=False, type=wandb_bool)
-    parser.add_argument(
-        "--scheme",
-        default="quantiles",
-        help="discretization scheme; either 'equidistant' or 'quantiles'",
-        type=str,
-    )
     parser.add_argument(
         "--metadata_path",
         default="/gpfs/data/huo-lab/Image/annawoodard/maicara/data/interim/mammo_v10/clean_metadata.pkl",
@@ -322,12 +315,9 @@ def main(args):
     label_transform, train_dataset, val_dataset, test_dataset = load_datasets(
         args.metadata_path,
         args.prescale,
-        args.num_durations,
-        args.scheme,
         args.debug,
         args.test_size,
         args.val_size,
-        False,
         train_transform,
         val_transform,
     )
@@ -392,6 +382,7 @@ def main(args):
         output_length=args.output_length,
         drop_path_rate=args.drop_path,
         global_pool=args.global_pool,
+        img_size=args.img_size,
     )
 
     if args.finetune and not args.eval:

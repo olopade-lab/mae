@@ -22,7 +22,7 @@ from torchvision import transforms
 
 
 def create_transform(
-    input_size,
+    img_size,
     is_training=False,
     use_prefetcher=False,
     no_aug=False,
@@ -44,10 +44,10 @@ def create_transform(
     separate=False,
 ):
 
-    if isinstance(input_size, tuple):
-        img_size = input_size[-2:]
+    if isinstance(img_size, tuple):
+        img_size = img_size[-2:]
     else:
-        img_size = input_size
+        img_size = img_size
 
     if tf_preprocessing and use_prefetcher:
         assert not separate, "Separate transforms not supported for TF preprocessing"
@@ -106,7 +106,7 @@ def build_transform(
 ):
     if is_train:
         transform = create_transform(
-            input_size=args.input_size,
+            img_size=args.img_size,
             is_training=True,
             color_jitter=args.color_jitter,
             auto_augment=args.aa,
@@ -121,17 +121,17 @@ def build_transform(
 
     # eval transform
     t = []
-    if args.input_size <= 224:
+    if args.img_size <= 224:
         crop_pct = 224 / 256
     else:
         crop_pct = 1.0
-    size = int(args.input_size / crop_pct)
+    size = int(args.img_size / crop_pct)
     t.append(
         transforms.Resize(
             size, interpolation=PIL.Image.BICUBIC
         ),  # to maintain same ratio w.r.t. 224 images
     )
-    t.append(transforms.CenterCrop(args.input_size))
+    t.append(transforms.CenterCrop(args.img_size))
 
     t.append(transforms.ToTensor())
     # t.append(ToFloat())
