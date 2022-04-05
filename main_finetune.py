@@ -15,6 +15,7 @@ import os
 # --------------------------------------------------------
 import random
 import string
+import sys
 import time
 from pathlib import Path
 from tkinter import N
@@ -69,6 +70,9 @@ def get_args_parser():
         help="Accumulate gradient iterations (for increasing the effective batch size under memory constraints)",
     )
 
+    parser.add_argument(
+        "--device", default="cuda", help="device to use for training / testing"
+    )
     # Model parameters
     parser.add_argument(
         "--model",
@@ -262,6 +266,16 @@ def get_args_parser():
         default="/gpfs/data/huo-lab/Image/annawoodard/maicara/data/interim/mammo_v10/clean_metadata.pkl",
     )
 
+    # distributed training parameters
+    parser.add_argument(
+        "--world_size", default=None, type=int, help="number of distributed processes"
+    )
+    parser.add_argument("--local_rank", default=-1, type=int)
+    parser.add_argument("--dist_on_itp", action="store_true")
+    parser.add_argument(
+        "--dist_url", default="env://", help="url used to set up distributed training"
+    )
+
     parser.add_argument(
         "--project",
         default=None,
@@ -274,12 +288,6 @@ def get_args_parser():
     )
     parser.add_argument("--config", default=None, help="wandb config to load")
     parser.add_argument(
-        "--gpus",
-        default=None,
-        type=str,
-        help="Comma-separated list of GPUs to run on. `None` to run on all. Example: `--gpus 0,1,2`",
-    )
-    parser.add_argument(
         "--trials",
         default=1,
         type=int,
@@ -289,14 +297,22 @@ def get_args_parser():
     return parser
 
 
-def main(args):
-    args.output_dir = misc.prepare_output_dir(args.output_dir, "finetuning", args.group)
-    misc.setup_for_distributed(True, os.path.join(args.output_dir, "finetune.log"))
+def main(
+    gpu, args, result_queue, label_transform, train_dataset, val_dataset, test_dataset
+):
+    args.output_dir = misc.prepare_output_dir(args.output_dir, "pretraining")
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    args.gpu = gpu
+    args.rank = gpu
+    misc.init_distributed_mode(args, tag="finetune")
+    if misc.is_main_process():
+        log_code_state(os.path.dirname(args.output_dir))
 
     print("job dir: {}".format(os.path.dirname(os.path.realpath(__file__))))
+    print("called with: {}".format(" ".join(sys.argv)))
     print("{}".format(args).replace(", ", ",\n"))
 
-    device = torch.device("cuda:0")
+    device = torch.device(args.device)
 
     # fix the seed for reproducibility
     seed = args.seed + misc.get_rank()
@@ -305,29 +321,21 @@ def main(args):
 
     cudnn.benchmark = True
 
-    train_transform = build_transform(
-        is_train=True, args=args, mean=(CHIMEC_MEAN,), std=(CHIMEC_STD,)
-    )
-    val_transform = build_transform(
-        is_train=False, args=args, mean=(CHIMEC_MEAN,), std=(CHIMEC_STD,)
-    )
-
-    label_transform, train_dataset, val_dataset, test_dataset = load_datasets(
-        args.metadata_path,
-        args.prescale,
-        args.debug,
-        args.test_size,
-        args.val_size,
-        train_transform,
-        val_transform,
-    )
     num_tasks = misc.get_world_size()
     global_rank = misc.get_rank()
 
-    sampler_train = BalancedClassSampler(train_dataset.metadata.event.to_list())
+    sampler_train = DistributedSamplerWrapper(
+        BalancedClassSampler(train_dataset.metadata.event.to_list()),
+        num_replicas=num_tasks,
+        rank=global_rank,
+    )
     print("Sampler_train = %s" % str(sampler_train))
-    sampler_val = torch.utils.data.SequentialSampler(val_dataset)
-    sampler_test = torch.utils.data.SequentialSampler(test_dataset)
+    sampler_val = torch.utils.data.DistributedSampler(
+        val_dataset, num_replicas=num_tasks, rank=global_rank, shuffle=False
+    )
+    sampler_test = torch.utils.data.DistributedSampler(
+        test_dataset, num_replicas=num_tasks, rank=global_rank, shuffle=False
+    )
 
     if global_rank == 0 and args.output_dir is not None and not args.eval:
         os.makedirs(args.output_dir, exist_ok=True)
@@ -420,6 +428,7 @@ def main(args):
         trunc_normal_(model.head.weight, std=2e-5)
 
     model.to(device)
+    model_without_ddp = model
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
@@ -437,23 +446,17 @@ def main(args):
     print("accumulate grad iterations: %d" % args.accum_iter)
     print("effective batch size: %d" % eff_batch_size)
 
-    if args.gpus is None:
-        args.gpus = list(range(torch.cuda.device_count()))
-    elif isinstance(args.gpus, str):
-        args.gpus = [int(x) for x in args.gpus.split(",")]
-    print(
-        f"Initializing DataParallel to run on GPUs: {','.join([str(x) for x in args.gpus])}"
-    )
-    if len(args.gpus) > 1:
-        model = torch.nn.parallel.DataParallel(model, device_ids=args.gpus)
-    # I'm having issues with DDP, DP isn't SO much of a performance hit, see: https://spell.ml/blog/pytorch-distributed-data-parallel-XvEaABIAAB8Ars0e
-    # model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+    if args.distributed:
+        model = torch.nn.parallel.DistributedDataParallel(
+            model, device_ids=[args.gpu]  # , find_unused_parameters=True
+        )
+        model_without_ddp = model.module
 
     # build optimizer with layer-wise lr decay (lrd)
     param_groups = lrd.param_groups_lrd(
-        model,
+        model_without_ddp,
         args.weight_decay,
-        no_weight_decay_list=model.no_weight_decay(),
+        no_weight_decay_list=model_without_ddp.no_weight_decay(),
         layer_decay=args.layer_decay,
     )
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
@@ -472,7 +475,7 @@ def main(args):
 
     misc.load_model(
         args=args,
-        model_without_ddp=model,
+        model_without_ddp=model_without_ddp,
         optimizer=optimizer,
         loss_scaler=loss_scaler,
     )
@@ -543,7 +546,7 @@ def main(args):
         misc.save_model(
             args=args,
             model=model,
-            model_without_ddp=model,
+            model_without_ddp=model_without_ddp,
             optimizer=optimizer,
             loss_scaler=loss_scaler,
             epoch=epoch,
@@ -567,20 +570,56 @@ def main(args):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print("Training time {}".format(total_time_str))
 
-    return c_index
+    result_queue.put(c_index)
 
 
 if __name__ == "__main__":
+    metric_logger = misc.MetricLogger(delimiter="  ")
     args = get_args_parser()
     args = args.parse_args()
-    args.group = "".join([random.choice(string.ascii_lowercase) for _ in range(5)])
-    metric_logger = misc.MetricLogger(delimiter="  ")
+    if args.world_size is None:
+        args.world_size = torch.cuda.device_count()
+
+    train_transform = build_transform(
+        is_train=True, args=args, mean=(CHIMEC_MEAN,), std=(CHIMEC_STD,)
+    )
+    val_transform = build_transform(
+        is_train=False, args=args, mean=(CHIMEC_MEAN,), std=(CHIMEC_STD,)
+    )
+
+    label_transform, train_dataset, val_dataset, test_dataset = load_datasets(
+        args.metadata_path,
+        args.prescale,
+        args.debug,
+        args.test_size,
+        args.val_size,
+        train_transform,
+        val_transform,
+    )
     for i in range(args.trials):
         print(f"starting trial {i}")
         args.seed = i
-        metric_logger.update(c_index=main(args))
+        result_queue = mp.Queue()
+        mp.spawn(
+            main,
+            args=(
+                args,
+                result_queue,
+                label_transform,
+                train_dataset,
+                val_dataset,
+                test_dataset,
+            ),
+            nprocs=args.world_size,
+            # join=True,
+        )
+        # if we've done it right, all processes should compute the same c-index
+        c_index = result_queue.get()
+        metric_logger.update(c_index=c_index)
     print(metric_logger)
+
     if args.project is not None:
+        args.group = "".join([random.choice(string.ascii_lowercase) for _ in range(5)])
         wandb.login()
         config = args.config if args.config else args
         run = wandb.init(config=config, project=args.project, group=args.group)

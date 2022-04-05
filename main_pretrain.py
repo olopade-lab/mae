@@ -185,7 +185,7 @@ def main(gpu, args):
     print("called with: {}".format(" ".join(sys.argv)))
     print("{}".format(args).replace(", ", ",\n"))
 
-    device = torch.device(args.device)
+    device = torch.device(args.device)  # TODO check
 
     # fix the seed for reproducibility
     seed = args.seed + misc.get_rank()
@@ -271,6 +271,7 @@ def main(gpu, args):
 
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
+    min_loss = torch.inf
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
@@ -291,7 +292,7 @@ def main(gpu, args):
         }
 
         if misc.is_main_process():
-            if epoch % 2 == 0 or epoch + 1 == args.epochs:
+            if train_stats["loss"] < min_loss:
                 misc.save_model(
                     args=args,
                     model=model,
@@ -306,6 +307,7 @@ def main(gpu, args):
                 os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8"
             ) as f:
                 f.write(json.dumps(log_stats) + "\n")
+        min_loss = train_stats["loss"]
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))

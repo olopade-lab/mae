@@ -8,8 +8,10 @@
 # DeiT: https://github.com/facebookresearch/deit
 # BEiT: https://github.com/microsoft/unilm/tree/master/beit
 # --------------------------------------------------------
+import gc
 import math
 import sys
+import time
 from typing import Iterable
 
 import torch
@@ -52,6 +54,7 @@ def train_one_epoch(
             )
 
         samples = samples.to(device, non_blocking=True)
+        # samples = samples.to(device, non_blocking=False)
 
         with torch.cuda.amp.autocast():
             loss, _, _ = model(samples, mask_ratio=args.mask_ratio)
