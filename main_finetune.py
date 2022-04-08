@@ -25,7 +25,7 @@ import timm
 import torch
 import torch.backends.cudnn as cudnn
 import torch.multiprocessing as mp
-from maicara.models.metrics import ConcordanceIndex
+from maicara.models.metrics import AUC, ConcordanceIndex
 from maicara.preprocessing.utils import log_code_state
 from pycox.models import logistic_hazard
 from torch.utils.tensorboard import SummaryWriter
@@ -300,7 +300,9 @@ def get_args_parser():
 def main(
     gpu, args, result_queue, label_transform, train_dataset, val_dataset, test_dataset
 ):
-    args.output_dir = misc.prepare_output_dir(args.output_dir, "pretraining")
+    args.output_dir = misc.prepare_output_dir(
+        args.output_dir, "finetuning", trial=args.trial
+    )
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     args.gpu = gpu
     args.rank = gpu
@@ -448,7 +450,10 @@ def main(
 
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(
-            model, device_ids=[args.gpu]  # , find_unused_parameters=True
+            # model, device_ids=[args.gpu]  # , find_unused_parameters=True
+            model,
+            device_ids=[args.gpu],
+            find_unused_parameters=True,
         )
         model_without_ddp = model.module
 
@@ -481,6 +486,8 @@ def main(
     )
     test_c_index = ConcordanceIndex(cuts=label_transform.cuts).to(device)
     val_c_index = ConcordanceIndex(cuts=label_transform.cuts).to(device)
+    test_auc = AUC().to(device)
+    val_auc = AUC().to(device)
 
     if args.eval:
         test_stats = evaluate(
@@ -489,10 +496,8 @@ def main(
             device,
             criterion,
             test_c_index,
+            test_auc,
             "test",
-        )
-        print(
-            f"Concordance index of the network on the {len(test_dataset)} test exams: {test_c_index.compute():.2f}"
         )
         exit(0)
 
@@ -513,20 +518,25 @@ def main(
             log_writer=log_writer,
             args=args,
         )
-        val_stats = evaluate(
-            data_loader_val,
-            model,
-            device,
-            criterion,
-            val_c_index,
-            "val",
-        )
-        c_index = val_c_index.compute()
-        val_c_index.reset()
+        val_stats = {}
+        # we can skip val if we've already chosen HPs
+        if args.val_size > 0:
+            val_stats = evaluate(
+                data_loader_val,
+                model,
+                device,
+                criterion,
+                val_c_index,
+                val_auc,
+                "val",
+            )
 
-        if log_writer is not None:
-            log_writer.add_scalar("val/c_index", val_stats["c_index"], epoch)
-            log_writer.add_scalar("val/loss", val_stats["loss"], epoch)
+            if log_writer is not None:
+                log_writer.add_scalar("val/c_index", val_stats["c_index"], epoch)
+                log_writer.add_scalar("val/loss", val_stats["loss"], epoch)
+                for k in val_stats:
+                    if "auc" in k:
+                        log_writer.add_scalar(f"val/{k}", val_stats[k], epoch)
 
         log_stats = {
             **{f"train_{k}": v for k, v in train_stats.items()},
@@ -542,41 +552,36 @@ def main(
         ) as f:
             f.write(json.dumps(log_stats) + "\n")
 
-    if args.output_dir:
-        misc.save_model(
-            args=args,
-            model=model,
-            model_without_ddp=model_without_ddp,
-            optimizer=optimizer,
-            loss_scaler=loss_scaler,
-            epoch=epoch,
-        )
-
-    if args.val_size > 0:
-        evaluate(
-            data_loader_test,
-            model,
-            device,
-            criterion,
-            test_c_index,
-            "test",
-        )
-        c_index = test_c_index.compute()
-    print(
-        f"Concordance index of the network on the {len(test_dataset)} test exams: {c_index:.2f}"
+    misc.save_model(
+        args=args,
+        model=model,
+        model_without_ddp=model_without_ddp,
+        optimizer=optimizer,
+        loss_scaler=loss_scaler,
+        epoch=epoch,
     )
+
+    test_stats = evaluate(
+        data_loader_test,
+        model,
+        device,
+        criterion,
+        test_c_index,
+        test_auc,
+        "test",
+    )
+    result_queue.put(test_stats)
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print("Training time {}".format(total_time_str))
-
-    result_queue.put(c_index)
 
 
 if __name__ == "__main__":
     metric_logger = misc.MetricLogger(delimiter="  ")
     args = get_args_parser()
     args = args.parse_args()
+    args.port = str(misc.get_unused_local_port())
     if args.world_size is None:
         args.world_size = torch.cuda.device_count()
 
@@ -596,9 +601,11 @@ if __name__ == "__main__":
         train_transform,
         val_transform,
     )
+    args.group = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M")
     for i in range(args.trials):
         print(f"starting trial {i}")
         args.seed = i
+        args.trial = i
         result_queue = mp.Queue()
         mp.spawn(
             main,
@@ -611,25 +618,21 @@ if __name__ == "__main__":
                 test_dataset,
             ),
             nprocs=args.world_size,
-            # join=True,
+            join=True,
         )
-        # if we've done it right, all processes should compute the same c-index
-        c_index = result_queue.get()
-        metric_logger.update(c_index=c_index)
+        test_stats = result_queue.get()
+        metric_logger.update(test_stats)
+    c_index = metric_logger.c_index.global_avg
+    std = metric_logger.c_index.std
     print(metric_logger)
 
     if args.project is not None:
-        args.group = "".join([random.choice(string.ascii_lowercase) for _ in range(5)])
         wandb.login()
         config = args.config if args.config else args
         run = wandb.init(config=config, project=args.project, group=args.group)
-        log_code_state(run.dir)
-        c_index = metric_logger.c_index.global_avg
-        std = metric_logger.c_index.std
         wandb.log(
             {
                 "collated/c-index": c_index,
-                "collated/weighted-c-index": c_index / std,
                 "collated/c-index-std": std,
             }
         )

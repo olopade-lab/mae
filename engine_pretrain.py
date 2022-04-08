@@ -53,7 +53,7 @@ def train_one_epoch(
                 optimizer, data_iter_step / len(data_loader) + epoch, args
             )
 
-        samples = samples.to(device, non_blocking=True)
+        samples = samples.half().to(device, non_blocking=True)
         # samples = samples.to(device, non_blocking=False)
 
         with torch.cuda.amp.autocast():

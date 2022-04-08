@@ -73,9 +73,13 @@ class BilateralVisionTransformer(VisionTransformer):
             else nn.Identity()
         )
 
-    def forward(self, x, contralateral_x):
-        x = self.forward_features(x)
-        contralateral_x = self.forward_features(contralateral_x)
+    def forward(self, x, contralateral_x, device):
+        x = x.to(device, non_blocking=False)
+        # FIXME linear eval for now to save memory
+        with torch.no_grad():
+            x = self.forward_features(x)
+            contralateral_x = contralateral_x.to(device, non_blocking=False)
+            contralateral_x = self.forward_features(contralateral_x)
         x = torch.cat((x, contralateral_x), dim=1)
         return self.head(x)
 
@@ -90,7 +94,7 @@ def bilateral_vit_base_patch16_grayscale(**kwargs):
         qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
         in_chans=1,
-        **kwargs
+        **kwargs,
     )
     return model
 
@@ -105,7 +109,7 @@ def vit_base_patch16_grayscale(**kwargs):
         qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
         in_chans=1,
-        **kwargs
+        **kwargs,
     )
     return model
 
@@ -119,7 +123,7 @@ def vit_base_patch16(**kwargs):
         mlp_ratio=4,
         qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
-        **kwargs
+        **kwargs,
     )
     return model
 
@@ -134,7 +138,7 @@ def bilateral_vit_large_patch16_grayscale(**kwargs):
         qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
         in_chans=1,
-        **kwargs
+        **kwargs,
     )
     return model
 
@@ -149,7 +153,7 @@ def vit_large_patch16_grayscale(**kwargs):
         qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
         in_chans=1,
-        **kwargs
+        **kwargs,
     )
     return model
 
@@ -163,7 +167,7 @@ def vit_large_patch16(**kwargs):
         mlp_ratio=4,
         qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
-        **kwargs
+        **kwargs,
     )
     return model
 
@@ -177,6 +181,6 @@ def vit_huge_patch14(**kwargs):
         mlp_ratio=4,
         qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
-        **kwargs
+        **kwargs,
     )
     return model

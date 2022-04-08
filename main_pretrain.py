@@ -317,6 +317,7 @@ def main(gpu, args):
 if __name__ == "__main__":
     args = get_args_parser()
     args = args.parse_args()
+    args.port = str(misc.get_unused_local_port())
     if args.world_size is None:
         args.world_size = torch.cuda.device_count()
     mp.spawn(main, args=(args,), nprocs=args.world_size, join=True)

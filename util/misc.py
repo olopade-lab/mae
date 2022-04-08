@@ -9,6 +9,7 @@
 # BEiT: https://github.com/microsoft/unilm/tree/master/beit
 # --------------------------------------------------------
 
+import socket
 import builtins
 import datetime
 import os
@@ -23,15 +24,17 @@ import torch.distributed as dist
 from torch._six import inf
 
 
-def prepare_output_dir(output_dir, tag, group=None):
+def prepare_output_dir(output_dir, tag, group=None, trial=None):
     if output_dir is None:
         output_dir = os.path.join(
             os.environ["HOME"],
             "mae",
             f"{tag}_experiments",
-            group if group is not None else "",
-            datetime.datetime.now().strftime("%Y_%m_%d_%H_%M"),
-            "".join([random.choice(string.ascii_lowercase) for _ in range(5)]),
+            group
+            if group is not None
+            else datetime.datetime.now().strftime("%Y_%m_%d_%H_%M"),
+            str(trial) if trial is not None else "",
+            # "".join([random.choice(string.ascii_lowercase) for _ in range(5)]),
         )
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -261,6 +264,19 @@ def save_on_master(*args, **kwargs):
         torch.save(*args, **kwargs)
 
 
+def get_unused_local_port():
+    """
+    Borrowed from: https://github.com/Valloric/YouCompleteMe
+    """
+    sock = socket.socket()
+    # This tells the OS to give us any free port in the range [1024 - 65535]
+    sock.bind(("", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
+    return port
+
+
 def init_distributed_mode(args, tag=None):
     if args.dist_on_itp:
         args.rank = int(os.environ["OMPI_COMM_WORLD_RANK"])
@@ -287,7 +303,7 @@ def init_distributed_mode(args, tag=None):
         args.distributed = False
         return
     os.environ["MASTER_ADDR"] = "localhost"
-    os.environ["MASTER_PORT"] = "12355"
+    os.environ["MASTER_PORT"] = args.port
 
     args.distributed = True
 

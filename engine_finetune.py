@@ -58,8 +58,8 @@ def train_one_epoch(
                 optimizer, data_iter_step / len(data_loader) + epoch, args
             )
 
-        x = x.to(device, non_blocking=True)
-        contralateral_x = contralateral_x.to(device, non_blocking=True)
+        # x = x.to(device, non_blocking=True)
+        # contralateral_x = contralateral_x.to(device, non_blocking=True)
         duration = duration.to(device, non_blocking=True)
         event = event.to(device, non_blocking=True)
 
@@ -68,7 +68,7 @@ def train_one_epoch(
             samples, targets = mixup_fn(samples, targets)
 
         with torch.cuda.amp.autocast():
-            outputs = model(x, contralateral_x)
+            outputs = model(x, contralateral_x, device)
             loss = criterion(outputs, duration, event)
 
         loss_value = loss.item()
@@ -115,34 +115,40 @@ def train_one_epoch(
 
 
 @torch.no_grad()
-def evaluate(data_loader, model, device, criterion, c_index, tag="val"):
+def evaluate(data_loader, model, device, criterion, c_index, auc, tag="val"):
 
     metric_logger = misc.MetricLogger(delimiter="  ")
+    print("starting evaluate")
 
     # switch to evaluation mode
     model.eval()
+    print("switching to eval mode")
 
     for batch in metric_logger.log_every(data_loader, 10, tag):
-        try:
-            x, contralateral_x, duration, event = batch
-        except ValueError:
-            x, contralateral_x, duration, event, study_id = batch
+        x, contralateral_x, duration, years_to_event, event, study_id = batch
 
-        x = x.to(device, non_blocking=True)
-        contralateral_x = contralateral_x.to(device, non_blocking=True)
+        # x = x.to(device, non_blocking=True)
+        # contralateral_x = contralateral_x.to(device, non_blocking=True)
         duration = duration.to(device, non_blocking=True)
         event = event.to(device, non_blocking=True)
+        years_to_event = years_to_event.to(device, non_blocking=True)
 
         # compute output
         with torch.cuda.amp.autocast():
-            output = model(x, contralateral_x)
+            output = model(x, contralateral_x, device)
             loss = criterion(output, duration, event)
+        print("got loss")
 
         c_index.update(output, duration, event)
+        auc.update(output, duration, event, years_to_event)
         metric_logger.update(loss=loss.item())
+        print("finished updates")
     # gather the stats from all processes
     # metric_logger.synchronize_between_processes()
     c_index_value = c_index.compute()
+    # auc_results = auc.compute()
+    c_index.reset()
+    # auc.reset()
 
     print(
         "{tag}: c-index {c_index:.3f} loss {losses.global_avg:.3f}".format(
@@ -153,5 +159,7 @@ def evaluate(data_loader, model, device, criterion, c_index, tag="val"):
     # TODO fix to deduplicate
     stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
     stats["c_index"] = c_index_value
+    # for k, v in auc_results.items():
+    #     stats[k] = v
 
     return stats
