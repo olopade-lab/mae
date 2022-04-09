@@ -260,7 +260,7 @@ def get_args_parser():
     parser.add_argument("--val_size", default=0.2, type=float)
     parser.add_argument("--prescale", default=1, type=float)
     parser.add_argument("--balance", default=False, type=wandb_bool)
-    parser.add_argument("--debug", default=False, type=wandb_bool)
+    parser.add_argument("--debug", default=False, action="store_true")
     parser.add_argument(
         "--metadata_path",
         default="/gpfs/data/huo-lab/Image/annawoodard/maicara/data/interim/mammo_v10/clean_metadata.pkl",

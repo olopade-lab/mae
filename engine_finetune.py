@@ -137,12 +137,10 @@ def evaluate(data_loader, model, device, criterion, c_index, auc, tag="val"):
         with torch.cuda.amp.autocast():
             output = model(x, contralateral_x, device)
             loss = criterion(output, duration, event)
-        print("got loss")
 
         c_index.update(output, duration, event)
         auc.update(output, duration, event, years_to_event)
         metric_logger.update(loss=loss.item())
-        print("finished updates")
     # gather the stats from all processes
     # metric_logger.synchronize_between_processes()
     c_index_value = c_index.compute()

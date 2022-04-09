@@ -220,17 +220,23 @@ def setup_for_distributed(is_master, file=None):
         force = kwargs.pop("force", False)
         force = force or (get_world_size() > 8)
         if "file" in kwargs:
-            kwargs.pop("file")
+            f = kwargs.pop("file")
+            builtin_print(*args, **kwargs, file=f)
+            return
         if is_master or force:
             now = datetime.datetime.now().time()
             builtin_print("[{}] ".format(now), end="")  # print with time stamp
             builtin_print(*args, **kwargs)
             if file is not None:
                 with open(file, "a+") as f:
-                    builtin_print(
-                        "[{}] ".format(now), end="", file=f
-                    )  # print with time stamp
-                    builtin_print(*args, **kwargs, file=f)
+                    try:
+                        builtin_print(
+                            "[{}] ".format(now), end="", file=f
+                        )  # print with time stamp
+                        # builtin_print(*args, **kwargs, file=f)
+                        builtin_print(*args, file=f)
+                    except OSError:
+                        pass  # sometimes the FS is flaky but we don't want to kill the run
 
     builtins.print = print
 
